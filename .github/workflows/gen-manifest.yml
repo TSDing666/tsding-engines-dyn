@@ -1,0 +1,84 @@
+name: Generate engines-dyn manifest
+
+on:
+  workflow_dispatch:
+    inputs:
+      rev:
+        description: 'revision tag recorded in manifest (default main)'
+        required: false
+        type: string
+        default: 'main'
+
+permissions:
+  contents: write
+
+jobs:
+  gen-manifest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build manifest.json
+        run: |
+          python3 - << 'PYEOF'
+          import json, hashlib, glob, os, datetime
+
+          entries = []
+          for path in sorted(glob.glob('engines-dyn/libblutter_*.so')):
+              name = os.path.basename(path)                # libblutter_3_10_7.so
+              stem = name[len('libblutter_'):-len('.so')]  # 3_10_7
+              version = stem.replace('_', '.')             # 3.10.7
+              parts = version.split('.')
+              minor = '.'.join(parts[:2]) if len(parts) >= 2 else version
+              data = open(path, 'rb').read()
+              entries.append({
+                  'libraryName': f'blutter_{stem}',
+                  'file': name,
+                  'dartVersion': version,
+                  'minor': minor,
+                  'abi': 'arm64-v8a',
+                  'backend': 'exec',
+                  'analysis': True,
+                  'sha256': hashlib.sha256(data).hexdigest(),
+                  'bytes': len(data),
+              })
+
+          companions = []
+          for name in ['libcapstone.so', 'libc++_shared.so']:
+              path = f'engines-dyn/{name}'
+              data = open(path, 'rb').read()
+              companions.append({
+                  'name': name,
+                  'sha256': hashlib.sha256(data).hexdigest(),
+                  'bytes': len(data),
+              })
+
+          manifest = {
+              'schemaVersion': 1,
+              'generatedAt': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+              'rev': '${{ inputs.rev || "main" }}',
+              'targetAbi': 'arm64-v8a',
+              'runners': entries,
+              'companions': companions,
+          }
+          with open('engines-dyn/manifest.json', 'w') as f:
+              json.dump(manifest, f, indent=1)
+          print('runners:', len(entries), 'companions:', len(companions))
+          PYEOF
+
+      - name: Commit manifest
+        run: |
+          git config user.name "engine-bot"
+          git config user.email "engine-bot@users.noreply.github.com"
+          git add engines-dyn/manifest.json
+          git diff --cached --quiet && { echo "no change"; exit 0; }
+          git commit -m "manifest: regenerate"
+          for i in 1 2 3 4 5; do
+            git pull --rebase origin main && git push origin main && break
+            echo "push conflict, retry $i"; sleep 5
+          done
+
+      - name: Summary
+        run: |
+          echo "manifest.json regenerated" >> $GITHUB_STEP_SUMMARY
+          python3 -c "import json; m=json.load(open('engines-dyn/manifest.json')); print('versions:', m['runners'][0]['dartVersion'], '->', m['runners'][-1]['dartVersion'], '| count:', len(m['runners']))" >> $GITHUB_STEP_SUMMARY
