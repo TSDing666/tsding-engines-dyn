@@ -56,7 +56,7 @@ jobs:
           manifest = {
               'schemaVersion': 1,
               'generatedAt': datetime.datetime.now(datetime.timezone.utc).isoformat(),
-              'rev': '${{ inputs.rev || "main" }}',
+              'rev': '${{ inputs.rev || 'main' }}',
               'targetAbi': 'arm64-v8a',
               'runners': entries,
               'companions': companions,
