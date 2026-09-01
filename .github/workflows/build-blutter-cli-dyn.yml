@@ -16,7 +16,7 @@ on:
         description: 'Android NDK version'
         required: false
         type: string
-        default: 'r27'
+        default: 'r29'
 
 env:
   NDK_VERSION: ${{ inputs.ndk-version || 'r27' }}
