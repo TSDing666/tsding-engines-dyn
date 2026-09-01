@@ -1,0 +1,113 @@
+name: Build blutter CLI engines (dynamic-linked)
+
+on:
+  workflow_dispatch:
+    inputs:
+      versions:
+        description: 'Dart versions JSON array, e.g. ["3.10.0","3.13.1"]'
+        required: true
+        type: string
+      blutter-commit:
+        description: 'blutter commit hash (empty = default 528acbe)'
+        required: false
+        type: string
+        default: ''
+      ndk-version:
+        description: 'Android NDK version'
+        required: false
+        type: string
+        default: 'r27'
+
+env:
+  NDK_VERSION: ${{ inputs.ndk-version || 'r27' }}
+  BLUTTER_COMMIT: ${{ inputs.blutter-commit || '528acbe83ba35a3a53fb97b231cb5f968c7068d1' }}
+
+permissions:
+  contents: write
+
+jobs:
+  build-cli-engine-dyn:
+    name: dyn engine ${{ matrix.dart-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        dart-version: ${{ fromJSON(inputs.versions) }}
+
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build python3 python3-pip curl git file pkg-config unzip
+
+      - name: Setup Android NDK ${{ env.NDK_VERSION }}
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
+
+      - name: Cache build artifacts
+        uses: actions/cache@v4
+        with:
+          path: /tmp/blutter-cli-cache
+          key: blutter-cli-dyn-v1-${{ matrix.dart-version }}-${{ env.BLUTTER_COMMIT }}-${{ env.NDK_VERSION }}
+
+      - name: Build dynamic-linked blutter executable
+        run: |
+          mkdir -p output /tmp/blutter-cli-cache
+          bash scripts/build-blutter-cli-dyn.sh \
+            --dart-version "${{ matrix.dart-version }}" \
+            --ndk-path "$ANDROID_NDK_HOME" \
+            --output-dir "$(pwd)/output" \
+            --build-root "/tmp/blutter-cli-cache" \
+            --blutter-commit "$BLUTTER_COMMIT"
+
+      - name: Verify ELF is dynamic-linked
+        run: |
+          ls -lh output/
+          f=$(ls output/blutter-cli-dyn_*.so | head -n1)
+          file "$f" | grep -iE "arm64|aarch64" || { echo "ERROR: not arm64"; exit 1; }
+          interpreter=$(file "$f" | grep -o 'interpreter [^,]*' || true)
+          echo "interpreter: $interpreter"
+          size=$(stat -c%s "$f")
+          echo "size: $size"
+          if [ "$size" -gt 8000000 ]; then
+            echo "WARNING: file larger than 8MB — may still be statically linked"
+          fi
+
+      - name: Commit engine into repo (GitHub API distribution)
+        run: |
+          f=$(ls output/blutter-cli-dyn_*.so | head -n1)
+          target="engines-dyn/libblutter_$(echo "${{ matrix.dart-version }}" | tr '.' '_').so"
+          mkdir -p engines-dyn
+          cp "$f" "$target"
+          git config user.name "engine-bot"
+          git config user.email "engine-bot@users.noreply.github.com"
+          git add "$target"
+          git diff --cached --quiet && { echo "no change"; exit 0; }
+          git commit -m "dyn engine: $(basename "$target")"
+          ok=0
+          for i in 1 2 3 4 5 6 7 8; do
+            git pull --rebase origin main && git push origin main && ok=1 && break
+            echo "push conflict, retry $i"; sleep $((RANDOM % 10 + 3))
+          done
+          [ "$ok" = "1" ] || { echo "ERROR: push failed after retries"; exit 1; }
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: blutter-cli-dyn-${{ matrix.dart-version }}
+          path: output/blutter-cli-dyn_*.so
+          retention-days: 7
+
+      - name: Summary
+        run: |
+          f=$(ls output/blutter-cli-dyn_*.so | head -n1)
+          echo "### dyn engine ${{ matrix.dart-version }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          file "$f" >> $GITHUB_STEP_SUMMARY
+          ls -lh "$f" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
