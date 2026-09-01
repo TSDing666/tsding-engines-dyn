@@ -89,6 +89,22 @@ jobs:
             echo "WARNING: file larger than 8MB — may still be statically linked"
           fi
 
+      - name: Commit companion dynamic libs (capstone + libc++)
+        run: |
+          mkdir -p engines-dyn
+          cp /tmp/blutter-cli-cache/capstone_build/libcapstone.so engines-dyn/libcapstone.so
+          cp "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so" engines-dyn/libc++_shared.so
+          ls -lh engines-dyn/libcapstone.so engines-dyn/libc++_shared.so
+          git config user.name "engine-bot"
+          git config user.email "engine-bot@users.noreply.github.com"
+          git add engines-dyn/libcapstone.so engines-dyn/libc++_shared.so
+          git diff --cached --quiet && { echo "no change"; exit 0; }
+          git commit -m "companion libs (NDK ${{ env.NDK_VERSION }})"
+          for i in 1 2 3 4 5; do
+            git pull --rebase origin main && git push origin main && break
+            echo "push conflict, retry $i"; sleep $((RANDOM % 10 + 3))
+          done
+
       - name: Commit engine into repo (GitHub API distribution)
         run: |
           f=$(ls output/blutter-cli-dyn_*.so | head -n1)
